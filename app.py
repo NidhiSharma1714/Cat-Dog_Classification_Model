@@ -1,8 +1,11 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Request
 from fastapi.responses import JSONResponse
 from PIL import Image
 import numpy as np
 import os
+import time
+import csv
+from collections import defaultdict
 
 # --------------------------
 # Try importing TFLite Runtime, else fallback to TensorFlow
@@ -15,7 +18,7 @@ except ModuleNotFoundError:
     tflite = tf.lite
     print("⚠️  tflite-runtime not found — using TensorFlow Lite interpreter instead")
 
-app = FastAPI(title="CatDog Classifier API")
+app = FastAPI(title="CatDog Classifier API with Attack Detection")
 
 # --------------------------
 # Load TFLite model
@@ -31,20 +34,39 @@ input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
 # --------------------------
+# Track request patterns for attack detection
+# --------------------------
+request_log = defaultdict(list)  # {client_ip: [timestamps]}
+last_image_hash = {}
+
+# --------------------------
+# CSV Log setup
+# --------------------------
+LOG_FILE = "attack_log.csv"
+if not os.path.exists(LOG_FILE):
+    with open(LOG_FILE, mode="w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["timestamp", "client_ip", "reason", "filename", "prediction"])
+
+# --------------------------
+# Helper: compute simple image hash
+# --------------------------
+def image_hash(img: Image.Image):
+    img = img.resize((32, 32)).convert("L")
+    return str(np.mean(np.array(img)))
+
+# --------------------------
 # Prediction function
 # --------------------------
 def predict_image(img: Image.Image):
-    # Resize and normalize image
     img = img.resize((150, 150))
     img_array = np.array(img, dtype=np.float32) / 255.0
     img_array = np.expand_dims(img_array, axis=0)
 
-    # Run inference
     interpreter.set_tensor(input_details[0]['index'], img_array)
     interpreter.invoke()
     output_data = interpreter.get_tensor(output_details[0]['index'])[0]
 
-    # Output interpretation
     prob_dog = float(output_data[0])
     prob_cat = 1.0 - prob_dog
 
@@ -62,14 +84,67 @@ def predict_image(img: Image.Image):
     }
 
 # --------------------------
+# Detect possible black-box attacks
+# --------------------------
+def detect_attack(client_ip: str, img_hash: str, filename: str):
+    now = time.time()
+    request_log[client_ip].append(now)
+
+    # Keep only recent requests (last 10 sec)
+    request_log[client_ip] = [t for t in request_log[client_ip] if now - t <= 10]
+
+    alerts = []
+
+    # 1️⃣ Rapid requests (high frequency)
+    if len(request_log[client_ip]) > 5:
+        alerts.append("High request frequency")
+
+    # 2️⃣ Repeated or similar image submission
+    if last_image_hash.get(client_ip) == img_hash:
+        alerts.append("Repeated image submission")
+
+    # Update last image hash
+    last_image_hash[client_ip] = img_hash
+
+    return alerts
+
+# --------------------------
 # FastAPI route
 # --------------------------
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(request: Request, file: UploadFile = File(...)):
     try:
+        client_ip = request.client.host
         img = Image.open(file.file).convert("RGB")
+        img_hash_val = image_hash(img)
+
+        # Run prediction
         result = predict_image(img)
-        return JSONResponse(content=result)
+
+        # Check for suspicious activity
+        alerts = detect_attack(client_ip, img_hash_val, file.filename)
+
+        response = {"result": result}
+
+        # If alerts detected → log to CSV
+        if alerts:
+            response["alert"] = {
+                "status": "⚠️ Potential black-box attack detected",
+                "reasons": alerts
+            }
+
+            with open(LOG_FILE, mode="a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    time.strftime("%Y-%m-%d %H:%M:%S"),
+                    client_ip,
+                    "; ".join(alerts),
+                    file.filename,
+                    result["predicted_class"]
+                ])
+
+        return JSONResponse(content=response)
+
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
 
