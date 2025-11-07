@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Request
+from fastapi import FastAPI, File, UploadFile, Request, Form
 from fastapi.responses import JSONResponse
 from PIL import Image
 import numpy as np
@@ -182,3 +182,28 @@ async def predict(request: Request, file: UploadFile = File(...)):
 @app.get("/")
 def root():
     return {"message": "CatDog Classifier API is running. Use /predict to POST an image."}
+
+# --------------------------
+# Adversarial training endpoint (provide TRUE label)
+# --------------------------
+@app.post("/adv_learn")
+async def adv_learn(file: UploadFile = File(...), label: str = Form(...)):
+    try:
+        true_label = (label or "").strip().lower()
+        if true_label not in {"cat", "dog"}:
+            return JSONResponse(content={"error": "label must be 'Cat' or 'Dog'"}, status_code=400)
+
+        img = Image.open(file.file).convert("RGB")
+
+        updated = continuous_learner.update_with_pil_image(img, true_label)
+
+        return JSONResponse(
+            content={
+                "status": "ok",
+                "learned_from": true_label,
+                "model_updated": bool(updated),
+                "note": "If model_updated is true, TFLite was regenerated and hot-reloaded."
+            }
+        )
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=400)
