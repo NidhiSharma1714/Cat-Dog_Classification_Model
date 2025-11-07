@@ -7,6 +7,8 @@ import time
 import csv
 from collections import defaultdict
 
+from continuous_learning import get_continuous_learner
+
 # --------------------------
 # Try importing TFLite Runtime, else fallback to TensorFlow
 # --------------------------
@@ -25,13 +27,28 @@ app = FastAPI(title="CatDog Classifier API with Attack Detection")
 # --------------------------
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "cat_dog_classifier.tflite")
 
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(f"TFLite model not found: {MODEL_PATH}")
 
-interpreter = tflite.Interpreter(model_path=MODEL_PATH)
-interpreter.allocate_tensors()
+def _load_interpreter():
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(f"TFLite model not found: {MODEL_PATH}")
+    interpreter_obj = tflite.Interpreter(model_path=MODEL_PATH)
+    interpreter_obj.allocate_tensors()
+    return interpreter_obj
+
+
+interpreter = _load_interpreter()
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
+
+
+def _reload_interpreter():
+    global interpreter, input_details, output_details
+    interpreter = _load_interpreter()
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+
+continuous_learner = get_continuous_learner(on_model_updated=_reload_interpreter)
 
 # --------------------------
 # Track request patterns for attack detection
@@ -125,6 +142,17 @@ async def predict(request: Request, file: UploadFile = File(...)):
         alerts = detect_attack(client_ip, img_hash_val, file.filename)
 
         response = {"result": result}
+
+        # Attempt to fine-tune the model with the newly observed sample.
+        try:
+            updated = continuous_learner.update_with_pil_image(img.copy(), result["predicted_class"])
+            if updated:
+                response["continuous_learning"] = {
+                    "status": "model_refreshed",
+                    "details": "Model fine-tuned with latest sample."
+                }
+        except Exception as exc:
+            print(f"[ContinuousLearning] Skipped update: {exc}")
 
         # If alerts detected → log to CSV
         if alerts:

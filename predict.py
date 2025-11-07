@@ -1,7 +1,11 @@
 import sys
 import os
+from pathlib import Path
+
 import numpy as np
 from PIL import Image
+
+from continuous_learning import get_continuous_learner
 
 # --------------------------
 # Platform-dependent import
@@ -19,14 +23,28 @@ except ImportError:
 # --------------------------
 MODEL_PATH = "cat_dog_classifier.tflite"  # Fixed path
 
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(f"TFLite model not found: {MODEL_PATH}")
 
-interpreter = tflite.Interpreter(model_path=MODEL_PATH)
-interpreter.allocate_tensors()
+def _load_interpreter():
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(f"TFLite model not found: {MODEL_PATH}")
+    interpreter_obj = tflite.Interpreter(model_path=MODEL_PATH)
+    interpreter_obj.allocate_tensors()
+    return interpreter_obj
 
+
+interpreter = _load_interpreter()
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
+
+
+def _reload_interpreter():
+    global interpreter, input_details, output_details
+    interpreter = _load_interpreter()
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+
+continuous_learner = get_continuous_learner(on_model_updated=_reload_interpreter)
 
 # --------------------------
 # Prediction function
@@ -61,6 +79,14 @@ def predict(image_path):
     print(f"Predicted:  {prediction_class}")
     print(f"Confidence: {confidence:.2f}%")
     print(f"Probabilities -> Cat: {prob_cat:.2f}, Dog: {prob_dog:.2f}")
+
+    # Continuous learning hook (best-effort)
+    try:
+        updated = continuous_learner.update_with_image(Path(image_path).resolve(), prediction_class)
+        if updated:
+            print("[ContinuousLearning] Model refreshed with latest sample.")
+    except Exception as exc:
+        print(f"[ContinuousLearning] Skipped update: {exc}")
 
 # --------------------------
 # Run script from CLI

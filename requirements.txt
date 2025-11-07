@@ -5,4 +5,5 @@ numpy<2
 Pillow
 tflite-runtime==2.14.0
 python-multipart
+tensorflow>=2.12,<3
 
