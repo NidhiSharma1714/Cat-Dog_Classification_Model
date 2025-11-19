@@ -14,3 +14,4 @@ timestamp,client_ip,reason,filename,prediction
 2025-11-13 10:34:45,127.0.0.1,Repeated image submission,983.jpg,Cat
 2025-11-13 10:36:32,127.0.0.1,Repeated image submission,983.jpg,Cat
 2025-11-13 11:49:27,127.0.0.1,Repeated image submission,983.jpg,Cat
+2025-11-19 09:54:26,127.0.0.1,Repeated image submission,cat.jpg,Cat
